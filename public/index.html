@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>VibeMap</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📍</text></svg>" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- FLOATING TOP HUD -->
+  <header class="hud-top">
+    <div class="hud-bar">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">VibeMap</span>
+        <span class="live-count" id="live-count">0</span>
+      </div>
+
+      <div class="hud-controls">
+        <select id="city-select" class="city-select" aria-label="Выбор города"></select>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-locate" title="Моё местоположение">◎</button>
+        <button type="button" class="btn btn-primary btn-sm" id="btn-drop-mode">+ Отметить</button>
+      </div>
+    </div>
+
+    <div class="filter-strip" id="category-filters"></div>
+
+    <div class="drop-banner hidden" id="drop-banner">
+      <span>Нажми на любое место на карте, чтобы поставить метку</span>
+      <button type="button" class="btn-link" id="btn-cancel-drop">Отмена</button>
+    </div>
+  </header>
+
+  <!-- FLOATING BOTTOM CONTROLS -->
+  <div class="hud-bottom">
+    <button type="button" class="btn btn-secondary btn-sm" id="btn-toggle-list">
+      Список (<span id="list-count">0</span>)
+    </button>
+  </div>
+
+  <!-- ACTIVE VIBES DRAWER -->
+  <aside class="sheet list-sheet hidden" id="sheet-list" aria-label="Активные метки">
+    <div class="sheet-head">
+      <h3>Сейчас на карте</h3>
+      <button type="button" class="icon-close" id="btn-close-list">✕</button>
+    </div>
+    <div class="list-body" id="vibes-list"></div>
+  </aside>
+
+  <!-- CREATE PIN SHEET -->
+  <aside class="sheet create-sheet hidden" id="sheet-create" aria-label="Новая метка">
+    <div class="sheet-head">
+      <h3>Новая метка</h3>
+      <button type="button" class="icon-close" id="btn-close-create">✕</button>
+    </div>
+
+    <form id="form-create-pin" class="sheet-form">
+      <div class="coords-hint" id="create-coords-hint">Кликни по карте, чтобы передвинуть точку</div>
+
+      <div class="field">
+        <label>Настроение / категория</label>
+        <div class="cat-chips" id="create-categories"></div>
+      </div>
+
+      <div class="field">
+        <label for="p-title">Коротко: что здесь сейчас?</label>
+        <input id="p-title" type="text" maxlength="80" placeholder="Например, тихо, свободные столы и быстрый Wi-Fi" required />
+      </div>
+
+      <div class="field">
+        <label for="p-note">Детали (необязательно)</label>
+        <textarea id="p-note" rows="2" maxlength="240" placeholder="Очередь, музыка, пароль от вайфая или сколько мест"></textarea>
+      </div>
+
+      <div class="field">
+        <label>Теги</label>
+        <div class="tag-chips" id="create-tags"></div>
+      </div>
+
+      <div class="field-row">
+        <div class="field grow">
+          <label>Сколько живёт метка</label>
+          <div class="tag-chips" id="create-ttl"></div>
+        </div>
+        <div class="field grow">
+          <label for="p-author">Твоё имя</label>
+          <input id="p-author" type="text" maxlength="24" placeholder="Аноним" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="file-label">
+          Прикрепить фото
+          <input type="file" id="p-photo" accept="image/*" capture="environment" />
+        </label>
+        <span class="muted hidden" id="p-photo-status"></span>
+        <img id="p-photo-preview" class="photo-preview hidden" alt="Превью" />
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-block">Опубликовать на карту</button>
+    </form>
+  </aside>
+
+  <!-- PIN DETAIL SHEET -->
+  <aside class="sheet detail-sheet hidden" id="sheet-detail" aria-label="Детали метки">
+    <div class="sheet-head">
+      <span class="detail-cat-pill" id="detail-cat-pill"></span>
+      <button type="button" class="icon-close" id="btn-close-detail">✕</button>
+    </div>
+    <div class="detail-body" id="detail-body"></div>
+  </aside>
+
+  <!-- PHOTO LIGHTBOX -->
+  <div class="modal-backdrop hidden" id="modal-lightbox" role="dialog" aria-modal="true">
+    <div class="lightbox-wrap">
+      <button type="button" class="icon-close" id="btn-close-lightbox">✕</button>
+      <img id="lightbox-img" alt="Фото с места" />
+    </div>
+  </div>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
