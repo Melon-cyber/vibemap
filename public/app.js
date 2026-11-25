@@ -124,9 +124,8 @@ function compressImage(file) {
 function initMap() {
   const def = CITY_PRESETS[0];
   state.map = L.map('map', { zoomControl: false }).setView([def.lat, def.lng], def.zoom);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; OpenStreetMap &copy; CARTO',
-    subdomains: 'abcd',
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors',
     maxZoom: 19
   }).addTo(state.map);
 
