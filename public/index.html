@@ -17,7 +17,8 @@
       <div class="brand">
         <span class="brand-dot"></span>
         <span class="brand-name">VibeMap</span>
-        <span class="live-count" id="live-count">0</span>
+        <span class="live-count" id="live-count" title="Места и вайбы на карте">0</span>
+        <span class="weather-pill hidden" id="weather-pill"></span>
       </div>
 
       <div class="hud-controls">
@@ -29,6 +30,10 @@
 
     <div class="filter-strip" id="category-filters"></div>
 
+    <button type="button" class="search-area-btn hidden" id="btn-search-area">
+      Обновить места здесь
+    </button>
+
     <div class="drop-banner hidden" id="drop-banner">
       <span>Нажми на любое место на карте, чтобы поставить метку</span>
       <button type="button" class="btn-link" id="btn-cancel-drop">Отмена</button>
@@ -38,14 +43,17 @@
   <!-- FLOATING BOTTOM CONTROLS -->
   <div class="hud-bottom">
     <button type="button" class="btn btn-secondary btn-sm" id="btn-toggle-list">
-      Список (<span id="list-count">0</span>)
+      Места и вайбы (<span id="list-count">0</span>)
     </button>
   </div>
 
-  <!-- ACTIVE VIBES DRAWER -->
-  <aside class="sheet list-sheet hidden" id="sheet-list" aria-label="Активные метки">
+  <!-- ACTIVE PLACES & VIBES DRAWER -->
+  <aside class="sheet list-sheet hidden" id="sheet-list" aria-label="Места и вайбы">
     <div class="sheet-head">
-      <h3>Сейчас на карте</h3>
+      <div class="list-tabs">
+        <button type="button" class="list-tab active" data-list-tab="places" id="tab-list-places">Места (0)</button>
+        <button type="button" class="list-tab" data-list-tab="vibes" id="tab-list-vibes">Вайбы (0)</button>
+      </div>
       <button type="button" class="icon-close" id="btn-close-list">✕</button>
     </div>
     <div class="list-body" id="vibes-list"></div>
@@ -73,7 +81,7 @@
 
       <div class="field">
         <label for="p-note">Детали (необязательно)</label>
-        <textarea id="p-note" rows="2" maxlength="240" placeholder="Очередь, музыка, пароль от вайфая или сколько мест"></textarea>
+        <textarea id="p-note" rows="2" maxlength="240" placeholder="Очередь, музыка, розетки или сколько мест"></textarea>
       </div>
 
       <div class="field">
@@ -105,8 +113,8 @@
     </form>
   </aside>
 
-  <!-- PIN DETAIL SHEET -->
-  <aside class="sheet detail-sheet hidden" id="sheet-detail" aria-label="Детали метки">
+  <!-- PIN / PLACE DETAIL SHEET -->
+  <aside class="sheet detail-sheet hidden" id="sheet-detail" aria-label="Детали">
     <div class="sheet-head">
       <span class="detail-cat-pill" id="detail-cat-pill"></span>
       <button type="button" class="icon-close" id="btn-close-detail">✕</button>

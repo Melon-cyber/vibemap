@@ -6,6 +6,7 @@ import { REACTIONS, TTL_OPTIONS, VIBE_CATEGORY_MAP, VIBE_TAGS } from '../shared/
 const ID_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const MAX_IMAGE_BYTES = 2.5 * 1024 * 1024;
 const MAX_TTL_MS = 6 * 3600 * 1000;
+const SAFE_PLACE_ID_RE = /^[a-z0-9-]{3,40}$/i;
 const MIME_EXT = {
   'image/jpeg': 'jpg',
   'image/jpg': 'jpg',
@@ -30,6 +31,7 @@ export class VibeStore {
 
     fs.mkdirSync(this.uploadsDir, { recursive: true });
     this.pins = [];
+    this.placeReviews = {};
     this.load();
   }
 
@@ -41,15 +43,23 @@ export class VibeStore {
         if (Array.isArray(parsed.pins)) {
           this.pins = parsed.pins;
         }
+        if (parsed.placeReviews && typeof parsed.placeReviews === 'object') {
+          this.placeReviews = parsed.placeReviews;
+        }
       } catch {
         this.pins = [];
+        this.placeReviews = {};
       }
     }
   }
 
   save() {
     const tmpPath = `${this.storeFile}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify({ pins: this.pins }, null, 2), 'utf8');
+    fs.writeFileSync(
+      tmpPath,
+      JSON.stringify({ pins: this.pins, placeReviews: this.placeReviews }, null, 2),
+      'utf8'
+    );
     fs.renameSync(tmpPath, this.storeFile);
   }
 
@@ -296,5 +306,77 @@ export class VibeStore {
     }
     this.save();
     return this.sanitizePin(pin);
+  }
+
+  validatePlaceId(placeId) {
+    const clean = String(placeId || '').trim();
+    if (!SAFE_PLACE_ID_RE.test(clean)) {
+      throw createHttpError('Некорректный ID места', 400);
+    }
+    return clean;
+  }
+
+  computePlaceReviewStats(reviews) {
+    const count = reviews.length;
+    if (count === 0) return { count: 0, avgRating: null };
+    const sum = reviews.reduce((acc, r) => acc + r.rating, 0);
+    return { count, avgRating: Number((sum / count).toFixed(1)) };
+  }
+
+  getPlaceReviews(placeId) {
+    const cleanId = this.validatePlaceId(placeId);
+    const reviews = (this.placeReviews[cleanId] || []).map((r) => ({ ...r, tags: [...(r.tags || [])] }));
+    const { count, avgRating } = this.computePlaceReviewStats(reviews);
+    return { placeId: cleanId, reviews, count, avgRating };
+  }
+
+  getReviewSummaries() {
+    const summaries = {};
+    for (const [placeId, list] of Object.entries(this.placeReviews)) {
+      if (Array.isArray(list) && list.length > 0) {
+        summaries[placeId] = this.computePlaceReviewStats(list);
+      }
+    }
+    return summaries;
+  }
+
+  addPlaceReview(placeId, { rating, text, authorName = '', tags = [] } = {}) {
+    const cleanId = this.validatePlaceId(placeId);
+    const numRating = Number.parseInt(rating, 10);
+    if (!Number.isInteger(numRating) || numRating < 1 || numRating > 5) {
+      throw createHttpError('Оценка должна быть от 1 до 5', 400);
+    }
+    const cleanText = String(text || '').trim().slice(0, 240);
+    if (!cleanText) {
+      throw createHttpError('Напиши короткий отзыв', 400);
+    }
+
+    const cleanAuthor = String(authorName || '').trim().slice(0, 24) || 'Гость';
+    const cleanTags = Array.isArray(tags)
+      ? [...new Set(tags.map((t) => String(t).trim().slice(0, 24)).filter(Boolean))].slice(0, 4)
+      : [];
+
+    const review = {
+      id: crypto.randomUUID(),
+      rating: numRating,
+      text: cleanText,
+      authorName: cleanAuthor,
+      tags: cleanTags,
+      createdAt: Date.now()
+    };
+
+    const list = Array.isArray(this.placeReviews[cleanId]) ? this.placeReviews[cleanId] : [];
+    list.unshift(review);
+    this.placeReviews[cleanId] = list.slice(0, 50);
+    this.save();
+
+    const { count, avgRating } = this.computePlaceReviewStats(this.placeReviews[cleanId]);
+    return {
+      placeId: cleanId,
+      review,
+      reviews: this.placeReviews[cleanId].map((r) => ({ ...r, tags: [...(r.tags || [])] })),
+      count,
+      avgRating
+    };
   }
 }

@@ -4,13 +4,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
+import { discoverArea } from './discover.js';
 import { VibeStore } from './store.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
 
-export function createAppServer({ dataDir } = {}) {
+export function createAppServer({ dataDir, discoverFn = discoverArea } = {}) {
   const resolvedDataDir = dataDir || process.env.DATA_DIR || path.join(ROOT_DIR, 'data');
   const store = new VibeStore({ dataDir: resolvedDataDir });
 
@@ -34,9 +35,9 @@ export function createAppServer({ dataDir } = {}) {
   }
 
   function wrap(handler) {
-    return (req, res) => {
+    return async (req, res) => {
       try {
-        handler(req, res);
+        await handler(req, res);
       } catch (err) {
         const status = err.statusCode || 400;
         res.status(status).json({ error: err.message || 'Ошибка сервера' });
@@ -47,6 +48,48 @@ export function createAppServer({ dataDir } = {}) {
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, activePins: store.listPins().length });
   });
+
+  app.get(
+    '/api/discover',
+    wrap(async (req, res) => {
+      const lat = Number(req.query.lat);
+      const lng = Number(req.query.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return res.status(400).json({ error: 'Нужны координаты lat и lng' });
+      }
+      const data = await discoverFn({ lat, lng });
+      const summaries = store.getReviewSummaries();
+      const places = (data.places || []).map((place) => {
+        const summary = summaries[place.id] || { count: 0, avgRating: null };
+        return {
+          ...place,
+          reviewCount: summary.count,
+          avgRating: summary.avgRating
+        };
+      });
+      return res.json({ weather: data.weather || null, places });
+    })
+  );
+
+  app.get(
+    '/api/places/:placeId/reviews',
+    wrap((req, res) => {
+      res.json(store.getPlaceReviews(req.params.placeId));
+    })
+  );
+
+  app.post(
+    '/api/places/:placeId/reviews',
+    wrap((req, res) => {
+      const result = store.addPlaceReview(req.params.placeId, req.body);
+      broadcast({
+        type: 'place_review_added',
+        placeId: result.placeId,
+        summary: { count: result.count, avgRating: result.avgRating }
+      });
+      res.status(201).json(result);
+    })
+  );
 
   app.get(
     '/api/pins',

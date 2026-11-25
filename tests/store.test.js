@@ -48,13 +48,11 @@ test('VibeStore creates pins, confirms TTL, handles reactions/comments, and dele
     const commented = store.addComment(pin.id, { authorName: 'Аня', text: 'Иду!' });
     assert.equal(commented.comments.length, 1);
 
-    // Wrong author token -> 403
     assert.throws(
       () => store.deletePin(pin.id, { authorToken: 'bad-token' }),
       (err) => err.statusCode === 403
     );
 
-    // Valid delete removes pin and photo file
     const delRes = store.deletePin(pin.id, { authorToken });
     assert.equal(delRes.removed, true);
     assert.equal(store.listPins().length, 0);
@@ -92,6 +90,35 @@ test('VibeStore prunes expired pins and removes after 2 ended flags', () => {
     store.pins[0].expiresAt = Date.now() - 500;
     assert.equal(store.listPins().length, 0);
     assert.equal(store.getPin(p2.id), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('VibeStore persists place reviews and computes averages', () => {
+  const dir = makeTempDir();
+  try {
+    const store = new VibeStore({ dataDir: dir });
+    const r1 = store.addPlaceReview('osm-12345', {
+      rating: 5,
+      text: 'Топовый фильтр и есть розетки',
+      authorName: 'Марат'
+    });
+    assert.equal(r1.count, 1);
+    assert.equal(r1.avgRating, 5);
+
+    const r2 = store.addPlaceReview('osm-12345', {
+      rating: 4,
+      text: 'Вечером чуть шумно',
+      authorName: 'Лера'
+    });
+    assert.equal(r2.count, 2);
+    assert.equal(r2.avgRating, 4.5);
+
+    const reloaded = new VibeStore({ dataDir: dir });
+    const summary = reloaded.getReviewSummaries();
+    assert.equal(summary['osm-12345'].avgRating, 4.5);
+    assert.equal(reloaded.getPlaceReviews('osm-12345').reviews.length, 2);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

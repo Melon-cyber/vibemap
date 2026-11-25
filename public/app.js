@@ -12,12 +12,19 @@ const L = window.L;
 
 const state = {
   map: null,
-  markers: new Map(),
+  vibeMarkers: new Map(),
+  placeMarkers: new Map(),
   draftMarker: null,
   pins: [],
+  places: [],
+  weather: null,
+  lastDiscoverCenter: null,
   filterCategory: 'all',
+  listTab: 'places', // 'places' | 'vibes'
   dropMode: false,
-  selectedPinId: null,
+  selectedType: null, // 'pin' | 'place'
+  selectedId: null,
+  selectedRating: 5,
   draftLatLng: null,
   draftPhotoDataUrl: null,
   createForm: {
@@ -135,6 +142,13 @@ function initMap() {
       setDropMode(false);
     }
   });
+
+  state.map.on('moveend', () => {
+    if (!state.lastDiscoverCenter) return;
+    const c = state.map.getCenter();
+    const dist = state.map.distance(c, L.latLng(state.lastDiscoverCenter.lat, state.lastDiscoverCenter.lng));
+    $('btn-search-area').classList.toggle('hidden', dist < 1100);
+  });
 }
 
 function setDropMode(active) {
@@ -146,21 +160,60 @@ function setDropMode(active) {
   }
 }
 
+function getFilteredPins() {
+  return state.filterCategory === 'all'
+    ? state.pins
+    : state.pins.filter((p) => p.category === state.filterCategory);
+}
+
+function getFilteredPlaces() {
+  return state.filterCategory === 'all'
+    ? state.places
+    : state.places.filter((p) => p.category === state.filterCategory);
+}
+
 function syncMarkers() {
-  const visiblePins =
-    state.filterCategory === 'all'
-      ? state.pins
-      : state.pins.filter((p) => p.category === state.filterCategory);
+  const visiblePins = getFilteredPins();
+  const visiblePlaces = getFilteredPlaces();
 
-  const visibleIds = new Set(visiblePins.map((p) => p.id));
-
-  for (const [id, marker] of state.markers.entries()) {
-    if (!visibleIds.has(id)) {
+  // 1. Discovered real places (OSM + Wikipedia)
+  const placeIds = new Set(visiblePlaces.map((p) => p.id));
+  for (const [id, marker] of state.placeMarkers.entries()) {
+    if (!placeIds.has(id)) {
       marker.remove();
-      state.markers.delete(id);
+      state.placeMarkers.delete(id);
+    }
+  }
+  for (const place of visiblePlaces) {
+    const cat = VIBE_CATEGORY_MAP[place.category] || VIBE_CATEGORY_MAP.other;
+    const icon = L.divIcon({
+      className: '',
+      html: `<div class="place-marker">${escapeHtml(cat.icon)}</div>`,
+      iconSize: [26, 26],
+      iconAnchor: [13, 13]
+    });
+    if (state.placeMarkers.has(place.id)) {
+      const m = state.placeMarkers.get(place.id);
+      m.setLatLng([place.lat, place.lng]);
+    } else {
+      const marker = L.marker([place.lat, place.lng], { icon }).addTo(state.map);
+      marker.bindTooltip(`${escapeHtml(place.title)} · ${escapeHtml(place.kindLabel)}`, {
+        direction: 'top',
+        offset: [0, -12]
+      });
+      marker.on('click', () => openPlaceDetailSheet(place.id));
+      state.placeMarkers.set(place.id, marker);
     }
   }
 
+  // 2. Live ephemeral vibe pins (on top)
+  const pinIds = new Set(visiblePins.map((p) => p.id));
+  for (const [id, marker] of state.vibeMarkers.entries()) {
+    if (!pinIds.has(id)) {
+      marker.remove();
+      state.vibeMarkers.delete(id);
+    }
+  }
   for (const pin of visiblePins) {
     const cat = VIBE_CATEGORY_MAP[pin.category] || VIBE_CATEGORY_MAP.other;
     const icon = L.divIcon({
@@ -169,27 +222,57 @@ function syncMarkers() {
       iconSize: [34, 34],
       iconAnchor: [17, 17]
     });
-
-    if (state.markers.has(pin.id)) {
-      const m = state.markers.get(pin.id);
+    if (state.vibeMarkers.has(pin.id)) {
+      const m = state.vibeMarkers.get(pin.id);
       m.setLatLng([pin.lat, pin.lng]);
       m.setIcon(icon);
     } else {
-      const marker = L.marker([pin.lat, pin.lng], { icon }).addTo(state.map);
+      const marker = L.marker([pin.lat, pin.lng], { icon, zIndexOffset: 500 }).addTo(state.map);
       marker.bindTooltip(escapeHtml(pin.title), { direction: 'top', offset: [0, -16] });
-      marker.on('click', () => openDetailSheet(pin.id));
-      state.markers.set(pin.id, marker);
+      marker.on('click', () => openPinDetailSheet(pin.id));
+      state.vibeMarkers.set(pin.id, marker);
     }
   }
 
-  $('live-count').textContent = String(visiblePins.length);
-  $('list-count').textContent = String(visiblePins.length);
-  renderListSheet(visiblePins);
+  const total = visiblePins.length + visiblePlaces.length;
+  $('live-count').textContent = String(total);
+  $('list-count').textContent = String(total);
+  $('tab-list-places').textContent = `Места (${visiblePlaces.length})`;
+  $('tab-list-vibes').textContent = `Вайбы (${visiblePins.length})`;
+  renderListSheet(visiblePlaces, visiblePins);
+}
+
+// === DISCOVER AREA (WEATHER + OSM + WIKI) ===
+
+async function loadDiscoverArea(lat, lng) {
+  state.lastDiscoverCenter = { lat, lng };
+  $('btn-search-area').classList.add('hidden');
+  try {
+    const data = await api(`/api/discover?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`);
+    state.weather = data.weather;
+    state.places = data.places || [];
+    renderWeather();
+    syncMarkers();
+  } catch {
+    // non-fatal if upstream geo API is slow
+  }
+}
+
+function renderWeather() {
+  const pill = $('weather-pill');
+  if (!state.weather || state.weather.temp === null) {
+    pill.classList.add('hidden');
+    return;
+  }
+  const sign = state.weather.temp > 0 ? '+' : '';
+  const sunsetPart = state.weather.sunsetTime ? ` · закат ${state.weather.sunsetTime}` : '';
+  pill.textContent = `${state.weather.icon} ${sign}${state.weather.temp}°${sunsetPart}`;
+  pill.classList.remove('hidden');
 }
 
 // === SHEETS ===
 
-function openCreateSheetAt(lat, lng) {
+function openCreateSheetAt(lat, lng, preset = {}) {
   state.draftLatLng = { lat, lng };
   if (state.draftMarker) state.draftMarker.remove();
   const icon = L.divIcon({
@@ -199,6 +282,12 @@ function openCreateSheetAt(lat, lng) {
     iconAnchor: [9, 9]
   });
   state.draftMarker = L.marker([lat, lng], { icon }).addTo(state.map);
+
+  if (preset.title) $('p-title').value = preset.title;
+  if (preset.category && VIBE_CATEGORY_MAP[preset.category]) {
+    state.createForm.category = preset.category;
+    renderCreateChips();
+  }
 
   $('create-coords-hint').textContent = `Точка: ${lat.toFixed(4)}, ${lng.toFixed(4)} (можно кликнуть на другое место)`;
   $('sheet-detail').classList.add('hidden');
@@ -228,41 +317,212 @@ function renderCreateChips() {
   ).join('');
 }
 
-function renderListSheet(visiblePins) {
+function renderListSheet(visiblePlaces, visiblePins) {
   const body = $('vibes-list');
-  if (visiblePins.length === 0) {
-    body.innerHTML = '<p class="muted">Пока нет активных меток. Нажми «+ Отметить», чтобы поставить первую.</p>';
+
+  if (state.listTab === 'vibes') {
+    if (visiblePins.length === 0) {
+      body.innerHTML = '<p class="muted">Пока нет живых вайбов. Отметь что-нибудь рядом или нажми на любое место на карте.</p>';
+      return;
+    }
+    body.innerHTML = visiblePins
+      .map((pin) => {
+        const cat = VIBE_CATEGORY_MAP[pin.category] || VIBE_CATEGORY_MAP.other;
+        return `
+          <div class="list-item" data-pin-id="${escapeHtml(pin.id)}">
+            <div class="list-item-top">
+              <span>${escapeHtml(cat.icon)} ${escapeHtml(cat.label)}</span>
+              <span class="ttl-tick" data-expires="${pin.expiresAt}">${escapeHtml(formatRemaining(pin.expiresAt))}</span>
+            </div>
+            <div style="font-weight:600;">${escapeHtml(pin.title)}</div>
+          </div>`;
+      })
+      .join('');
+
+    body.querySelectorAll('.list-item').forEach((item) => {
+      item.addEventListener('click', () => {
+        const pin = state.pins.find((p) => p.id === item.dataset.pinId);
+        if (pin) {
+          state.map.flyTo([pin.lat, pin.lng], Math.max(state.map.getZoom(), 15), { duration: 0.5 });
+          openPinDetailSheet(pin.id);
+        }
+      });
+    });
     return;
   }
-  body.innerHTML = visiblePins
-    .map((pin) => {
-      const cat = VIBE_CATEGORY_MAP[pin.category] || VIBE_CATEGORY_MAP.other;
+
+  if (visiblePlaces.length === 0) {
+    body.innerHTML = '<p class="muted">Места загружаются или сдвинь карту и нажми «Обновить места здесь».</p>';
+    return;
+  }
+
+  body.innerHTML = visiblePlaces
+    .map((place) => {
+      const cat = VIBE_CATEGORY_MAP[place.category] || VIBE_CATEGORY_MAP.other;
+      const ratingBadge = place.avgRating ? `★ ${place.avgRating} (${place.reviewCount})` : place.kindLabel;
       return `
-        <div class="list-item" data-pin-id="${escapeHtml(pin.id)}">
+        <div class="list-item" data-place-id="${escapeHtml(place.id)}">
           <div class="list-item-top">
-            <span>${escapeHtml(cat.icon)} ${escapeHtml(cat.label)}</span>
-            <span class="ttl-tick" data-expires="${pin.expiresAt}">${escapeHtml(formatRemaining(pin.expiresAt))}</span>
+            <span>${escapeHtml(cat.icon)} ${escapeHtml(place.kindLabel)}</span>
+            <span>${escapeHtml(ratingBadge)}</span>
           </div>
-          <div style="font-weight:600;">${escapeHtml(pin.title)}</div>
+          <div style="font-weight:600;">${escapeHtml(place.title)}</div>
+          ${place.description ? `<div class="list-item-sub">${escapeHtml(place.description)}</div>` : ''}
         </div>`;
     })
     .join('');
 
   body.querySelectorAll('.list-item').forEach((item) => {
     item.addEventListener('click', () => {
-      const pin = state.pins.find((p) => p.id === item.dataset.pinId);
-      if (pin) {
-        state.map.flyTo([pin.lat, pin.lng], Math.max(state.map.getZoom(), 15), { duration: 0.5 });
-        openDetailSheet(pin.id);
+      const place = state.places.find((p) => p.id === item.dataset.placeId);
+      if (place) {
+        state.map.flyTo([place.lat, place.lng], Math.max(state.map.getZoom(), 16), { duration: 0.5 });
+        openPlaceDetailSheet(place.id);
       }
     });
   });
 }
 
-function openDetailSheet(id) {
+async function openPlaceDetailSheet(placeId) {
+  const place = state.places.find((p) => p.id === placeId);
+  if (!place) return;
+  state.selectedType = 'place';
+  state.selectedId = placeId;
+  state.selectedRating = 5;
+  closeCreateSheet();
+  $('sheet-list').classList.add('hidden');
+
+  const cat = VIBE_CATEGORY_MAP[place.category] || VIBE_CATEGORY_MAP.other;
+  $('detail-cat-pill').innerHTML = `<span style="color:${cat.color}">●</span> ${escapeHtml(cat.icon)} ${escapeHtml(place.kindLabel)}`;
+
+  const query = encodeURIComponent(`${place.title} ${place.address || ''}`.trim());
+  const gmapsUrl = `https://www.google.com/maps/search/?api=1&query=${query}`;
+  const yandexUrl = `https://yandex.ru/maps/?text=${query}`;
+
+  const tagsHtml = place.tags?.length
+    ? `<div class="tag-chips">${place.tags.map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join('')}</div>`
+    : '';
+
+  $('detail-body').innerHTML = `
+    <h2 class="detail-title">${escapeHtml(place.title)}</h2>
+    ${place.photoUrl ? `<img src="${escapeHtml(place.photoUrl)}" class="detail-photo" id="detail-photo-img" alt="Фото места" />` : ''}
+    ${place.description ? `<p class="muted">${escapeHtml(place.description)}</p>` : ''}
+    ${tagsHtml}
+
+    <div class="detail-actions">
+      <button type="button" class="btn btn-primary btn-sm" id="btn-drop-here">Отметить вайб здесь</button>
+    </div>
+
+    <div class="external-links">
+      <a class="btn btn-ghost btn-sm" href="${gmapsUrl}" target="_blank" rel="noopener noreferrer">Отзывы в Google Maps ↗</a>
+      <a class="btn btn-ghost btn-sm" href="${yandexUrl}" target="_blank" rel="noopener noreferrer">Яндекс Карты ↗</a>
+      ${place.wikiUrl ? `<a class="btn btn-ghost btn-sm" href="${escapeHtml(place.wikiUrl)}" target="_blank" rel="noopener noreferrer">Википедия ↗</a>` : ''}
+      ${place.website ? `<a class="btn btn-ghost btn-sm" href="${escapeHtml(place.website)}" target="_blank" rel="noopener noreferrer">Сайт ↗</a>` : ''}
+    </div>
+
+    <div class="reviews-box" id="place-reviews-box">
+      <div class="reviews-head">
+        <span>Отзывы в VibeMap</span>
+        <span class="muted" id="place-rating-summary">Загрузка…</span>
+      </div>
+      <div id="place-reviews-list" class="comments-list"></div>
+      <form id="form-place-review" class="field">
+        <div class="rating-picker" id="review-stars">
+          ${[1, 2, 3, 4, 5].map((n) => `<button type="button" class="star-btn${n === 5 ? ' active' : ''}" data-star="${n}">★ ${n}</button>`).join('')}
+        </div>
+        <input id="rev-author" type="text" maxlength="24" placeholder="Твоё имя (необяз.)" />
+        <div class="comment-form">
+          <input id="rev-text" type="text" maxlength="240" placeholder="Как тут атмосфера, кофе, места?" required />
+          <button type="submit" class="btn btn-secondary btn-sm">Ок</button>
+        </div>
+      </form>
+    </div>
+  `;
+
+  $('sheet-detail').classList.remove('hidden');
+
+  if ($('detail-photo-img')) {
+    $('detail-photo-img').addEventListener('click', () => {
+      $('lightbox-img').src = place.photoUrl;
+      $('modal-lightbox').classList.remove('hidden');
+    });
+  }
+
+  $('btn-drop-here').addEventListener('click', () => {
+    openCreateSheetAt(place.lat, place.lng, {
+      title: place.title,
+      category: place.category
+    });
+  });
+
+  $('review-stars').addEventListener('click', (e) => {
+    const btn = e.target.closest('.star-btn');
+    if (!btn) return;
+    state.selectedRating = Number(btn.dataset.star);
+    $('review-stars').querySelectorAll('.star-btn').forEach((b) => {
+      b.classList.toggle('active', Number(b.dataset.star) <= state.selectedRating);
+    });
+  });
+
+  $('form-place-review').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const res = await api(`/api/places/${encodeURIComponent(place.id)}/reviews`, {
+        method: 'POST',
+        body: JSON.stringify({
+          rating: state.selectedRating,
+          authorName: $('rev-author').value.trim(),
+          text: $('rev-text').value.trim()
+        })
+      });
+      $('rev-text').value = '';
+      renderPlaceReviews(res);
+      place.reviewCount = res.count;
+      place.avgRating = res.avgRating;
+      syncMarkers();
+      showToast('Отзыв добавлен');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  try {
+    const data = await api(`/api/places/${encodeURIComponent(place.id)}/reviews`);
+    renderPlaceReviews(data);
+  } catch {
+    $('place-rating-summary').textContent = 'Нет отзывов';
+  }
+}
+
+function renderPlaceReviews({ reviews = [], count = 0, avgRating = null }) {
+  const summary = $('place-rating-summary');
+  const list = $('place-reviews-list');
+  if (!summary || !list) return;
+
+  summary.textContent = count > 0 ? `★ ${avgRating} (${count})` : 'Пока нет';
+  if (reviews.length === 0) {
+    list.innerHTML = '<p class="muted">Оставь первый отзыв или посмотри отзывы в Google / Яндекс Картах выше.</p>';
+    return;
+  }
+  list.innerHTML = reviews
+    .map(
+      (r) => `
+      <div class="review-card">
+        <div class="review-top">
+          <strong>${escapeHtml(r.authorName)}</strong>
+          <span>${'★'.repeat(r.rating)}</span>
+        </div>
+        <div>${escapeHtml(r.text)}</div>
+      </div>`
+    )
+    .join('');
+}
+
+function openPinDetailSheet(id) {
   const pin = state.pins.find((p) => p.id === id);
   if (!pin) return;
-  state.selectedPinId = id;
+  state.selectedType = 'pin';
+  state.selectedId = id;
   closeCreateSheet();
   $('sheet-list').classList.add('hidden');
 
@@ -410,16 +670,16 @@ function upsertPin(pin) {
   if (idx >= 0) state.pins[idx] = pin;
   else state.pins.unshift(pin);
   syncMarkers();
-  if (state.selectedPinId === pin.id && !$('sheet-detail').classList.contains('hidden')) {
-    openDetailSheet(pin.id);
+  if (state.selectedType === 'pin' && state.selectedId === pin.id && !$('sheet-detail').classList.contains('hidden')) {
+    openPinDetailSheet(pin.id);
   }
 }
 
 function removePinLocal(id) {
   state.pins = state.pins.filter((p) => p.id !== id);
-  if (state.selectedPinId === id) {
+  if (state.selectedType === 'pin' && state.selectedId === id) {
     $('sheet-detail').classList.add('hidden');
-    state.selectedPinId = null;
+    state.selectedId = null;
   }
   syncMarkers();
 }
@@ -440,6 +700,13 @@ function connectWs() {
       upsertPin(msg.pin);
     } else if (msg.type === 'pin_removed' && msg.id) {
       removePinLocal(msg.id);
+    } else if (msg.type === 'place_review_added' && msg.placeId) {
+      const place = state.places.find((p) => p.id === msg.placeId);
+      if (place && msg.summary) {
+        place.reviewCount = msg.summary.count;
+        place.avgRating = msg.summary.avgRating;
+        syncMarkers();
+      }
     }
   });
   ws.addEventListener('close', () => setTimeout(connectWs, 2500));
@@ -457,7 +724,10 @@ async function init() {
   ).join('');
   $('city-select').addEventListener('change', (e) => {
     const c = CITY_PRESETS[Number(e.target.value)];
-    if (c) state.map.flyTo([c.lat, c.lng], c.zoom, { duration: 0.6 });
+    if (c) {
+      state.map.flyTo([c.lat, c.lng], c.zoom, { duration: 0.6 });
+      loadDiscoverArea(c.lat, c.lng);
+    }
   });
 
   $('category-filters').innerHTML = [
@@ -474,6 +744,11 @@ async function init() {
     syncMarkers();
   });
 
+  $('btn-search-area').addEventListener('click', () => {
+    const c = state.map.getCenter();
+    loadDiscoverArea(c.lat, c.lng);
+  });
+
   $('btn-locate').addEventListener('click', () => {
     if (!navigator.geolocation) {
       showToast('Геолокация не поддерживается', true);
@@ -481,7 +756,9 @@ async function init() {
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        state.map.flyTo([pos.coords.latitude, pos.coords.longitude], 15, { duration: 0.6 });
+        const { latitude, longitude } = pos.coords;
+        state.map.flyTo([latitude, longitude], 15, { duration: 0.6 });
+        loadDiscoverArea(latitude, longitude);
       },
       () => showToast('Не удалось определить геолокацию', true),
       { enableHighAccuracy: true, timeout: 6000 }
@@ -493,7 +770,7 @@ async function init() {
   $('btn-close-create').addEventListener('click', closeCreateSheet);
   $('btn-close-detail').addEventListener('click', () => {
     $('sheet-detail').classList.add('hidden');
-    state.selectedPinId = null;
+    state.selectedId = null;
   });
 
   $('btn-toggle-list').addEventListener('click', () => {
@@ -501,7 +778,14 @@ async function init() {
   });
   $('btn-close-list').addEventListener('click', () => $('sheet-list').classList.add('hidden'));
 
-  // Create form chips
+  document.querySelectorAll('.list-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      state.listTab = tab.dataset.listTab;
+      document.querySelectorAll('.list-tab').forEach((t) => t.classList.toggle('active', t === tab));
+      renderListSheet(getFilteredPlaces(), getFilteredPins());
+    });
+  });
+
   $('create-categories').addEventListener('click', (e) => {
     const btn = e.target.closest('.chip');
     if (!btn) return;
@@ -566,7 +850,7 @@ async function init() {
       renderCreateChips();
       closeCreateSheet();
       upsertPin(pin);
-      openDetailSheet(pin.id);
+      openPinDetailSheet(pin.id);
       showToast('Метка добавлена на карту');
     } catch (err) {
       showToast(err.message, true);
@@ -578,7 +862,6 @@ async function init() {
     if (e.target === $('modal-lightbox')) $('modal-lightbox').classList.add('hidden');
   });
 
-  // Update TTL countdowns every 30s
   setInterval(() => {
     document.querySelectorAll('.ttl-tick').forEach((el) => {
       const exp = Number(el.dataset.expires);
@@ -586,14 +869,15 @@ async function init() {
     });
   }, 30_000);
 
-  // Initial load + deep link
-  try {
-    const { pins } = await api('/api/pins');
-    state.pins = pins;
-    syncMarkers();
-  } catch (err) {
-    showToast(err.message, true);
-  }
+  // Initial load: live pins + discovered real places & weather
+  const def = CITY_PRESETS[0];
+  await Promise.allSettled([
+    api('/api/pins').then((d) => {
+      state.pins = d.pins || [];
+    }),
+    loadDiscoverArea(def.lat, def.lng)
+  ]);
+  syncMarkers();
 
   const deepPinId = new URLSearchParams(location.search).get('pin');
   if (deepPinId) {
@@ -601,7 +885,7 @@ async function init() {
       const { pin } = await api(`/api/pins/${encodeURIComponent(deepPinId)}`);
       upsertPin(pin);
       state.map.flyTo([pin.lat, pin.lng], 15, { duration: 0.6 });
-      openDetailSheet(pin.id);
+      openPinDetailSheet(pin.id);
     } catch {
       showToast('Метка уже исчезла или не найдена', true);
     }

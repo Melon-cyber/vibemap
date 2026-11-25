@@ -24,9 +24,26 @@ function nextWsMsg(ws, predicate = () => true) {
   });
 }
 
-test('VibeMap HTTP API, photo serving, and WebSocket broadcasts work end-to-end', async () => {
+test('VibeMap HTTP API, discover, place reviews, and WebSocket broadcasts work end-to-end', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibemap-srv-'));
-  const appServer = createAppServer({ dataDir });
+  const stubDiscover = async () => ({
+    weather: { temp: 6, icon: '☁️', label: 'Пасмурно', sunsetTime: '16:20' },
+    places: [
+      {
+        id: 'osm-999',
+        source: 'osm',
+        lat: 43.24,
+        lng: 76.9,
+        title: 'Кофейня Тест',
+        category: 'work',
+        kindLabel: 'Кофейня',
+        tags: ['Wi-Fi'],
+        description: 'Кофейня'
+      }
+    ]
+  });
+
+  const appServer = createAppServer({ dataDir, discoverFn: stubDiscover });
   await new Promise((resolve) => appServer.server.listen(0, '127.0.0.1', resolve));
   const { port } = appServer.server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -41,6 +58,22 @@ test('VibeMap HTTP API, photo serving, and WebSocket broadcasts work end-to-end'
     const health = await fetch(`${baseUrl}/api/health`).then((r) => r.json());
     assert.equal(health.ok, true);
     assert.equal(health.activePins, 0);
+
+    // Place review + discover summary enrichment
+    const revEventPromise = nextWsMsg(ws, (m) => m.type === 'place_review_added');
+    const revRes = await fetch(`${baseUrl}/api/places/osm-999/reviews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rating: 5, text: 'Супер место', authorName: 'Саня' })
+    });
+    assert.equal(revRes.status, 201);
+    const revMsg = await revEventPromise;
+    assert.equal(revMsg.summary.avgRating, 5);
+
+    const discoverData = await fetch(`${baseUrl}/api/discover?lat=43.24&lng=76.9`).then((r) => r.json());
+    assert.equal(discoverData.weather.temp, 6);
+    assert.equal(discoverData.places[0].reviewCount, 1);
+    assert.equal(discoverData.places[0].avgRating, 5);
 
     const createdPromise = nextWsMsg(ws, (m) => m.type === 'pin_created');
     const createRes = await fetch(`${baseUrl}/api/pins`, {
